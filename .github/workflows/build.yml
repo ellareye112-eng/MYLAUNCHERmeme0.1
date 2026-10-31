@@ -1,0 +1,179 @@
+name: Compilar APK
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Aceptar licencias de Android
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
+      - name: Crear proyecto MiLauncher
+        run: |
+          set -e
+          mkdir -p MiLauncher
+          cat > MiLauncher/settings.gradle.kts << 'FIN_ARCHIVO'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "MiLauncher"
+          include(":app")
+          FIN_ARCHIVO
+          cat > MiLauncher/build.gradle.kts << 'FIN_ARCHIVO'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          FIN_ARCHIVO
+          cat > MiLauncher/gradle.properties << 'FIN_ARCHIVO'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          FIN_ARCHIVO
+          mkdir -p MiLauncher/app
+          cat > MiLauncher/app/build.gradle.kts << 'FIN_ARCHIVO'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.milauncher"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.milauncher"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          FIN_ARCHIVO
+          mkdir -p MiLauncher/app/src/main
+          cat > MiLauncher/app/src/main/AndroidManifest.xml << 'FIN_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- Necesario en Android 11+ para poder ver la lista de apps instaladas -->
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:label="MiLauncher"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:stateNotNeeded="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <!-- Estas dos líneas lo convierten en launcher -->
+                          <category android:name="android.intent.category.HOME" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          FIN_ARCHIVO
+          mkdir -p MiLauncher/app/src/main/java/com/example/milauncher
+          cat > MiLauncher/app/src/main/java/com/example/milauncher/MainActivity.kt << 'FIN_ARCHIVO'
+          package com.example.milauncher
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.os.Bundle
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.ArrayAdapter
+          import android.widget.ListView
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  // 1. Pedir todas las apps que se pueden abrir desde el launcher
+                  val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                  val apps = packageManager.queryIntentActivities(query, 0)
+                      .sortedBy { it.loadLabel(packageManager).toString().lowercase() }
+                  val names = apps.map { it.loadLabel(packageManager).toString() }
+
+                  // 2. Mostrarlas en una lista simple con texto grande
+                  val adapter = object : ArrayAdapter<String>(
+                      this, android.R.layout.simple_list_item_1, names
+                  ) {
+                      override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                          val row = super.getView(position, convertView, parent) as TextView
+                          row.textSize = 24f
+                          row.setPadding(64, 28, 64, 28)
+                          return row
+                      }
+                  }
+
+                  // 3. Al tocar una, abrirla
+                  val list = ListView(this)
+                  list.adapter = adapter
+                  list.setOnItemClickListener { _, _, position, _ ->
+                      val info = apps[position].activityInfo
+                      val launch = Intent(Intent.ACTION_MAIN)
+                          .addCategory(Intent.CATEGORY_LAUNCHER)
+                          .setClassName(info.packageName, info.name)
+                          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      startActivity(launch)
+                  }
+
+                  setContentView(list)
+              }
+          }
+          FIN_ARCHIVO
+
+      - name: Compilar APK
+        working-directory: MiLauncher
+        run: gradle assembleDebug --no-daemon
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiLauncher-apk
+          path: MiLauncher/app/build/outputs/apk/debug/app-debug.apk
